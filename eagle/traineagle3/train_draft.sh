@@ -4,7 +4,7 @@
 
 cd "$(dirname "$0")"
 
-deepspeed main.py \
+python -m deepspeed.launcher.runner main.py \
     --deepspeed_config ds_config.json \
     --basepath ../../Llama-3.1-8B-Instruct \
     --trainpath ../../sharegpt_train.jsonl \
