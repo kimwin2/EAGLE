@@ -238,15 +238,6 @@ model_engine, optimizer, _, _ = deepspeed.initialize(args=args,
 global_rank = deepspeed.comm.get_rank()
 rank = deepspeed.comm.get_local_rank()
 world_size = deepspeed.comm.get_world_size()
-if global_rank == 0:
-    import wandb
-    
-    # User should login via `wandb login` in CLI
-    # wandb.login(key="")
-    # wandb.init(project="l382", entity="yuhui-li", config=ds_config)
-    
-    wandb.init(project="EAGLE3-Draft", config=ds_config)
-
 os.makedirs(args.savedir, exist_ok=True)
 
 sampler = DistributedSampler(testdataset, num_replicas=world_size, rank=global_rank, shuffle=False)
@@ -307,13 +298,13 @@ for epoch in range(start_epoch, num_epochs):
 
         model_engine.step()
 
-        if global_rank == 0:
-            logdict = {"train/lr": optimizer.optimizer.param_groups[0]["lr"]}
-            for i in range(len(plosses)):
-                logdict[f"train/ploss_{i}"] = plosses[i].item()
-            for i in range(len(acces)):
-                logdict[f"train/acc_{i}"] = acces[i]
-            wandb.log(logdict)
+        # Remove wandb logging section
+        # if global_rank == 0:
+        #     logdict = {"train/lr": optimizer.optimizer.param_groups[0]["lr"]}
+        #     for i in range(len(plosses)):
+        #         logdict[f"train/ploss_{i}"] = plosses[i].item()
+        #     for i in range(len(acces)):
+        #         logdict[f"train/acc_{i}"] = acces[i]
         epoch_acces = [epoch_acces[i] + [acces[i]] for i in range(len(acces))]
         epoch_plosses = [epoch_plosses[i] + [plosses[i].item()] for i in range(len(plosses))]
 
@@ -323,7 +314,6 @@ for epoch in range(start_epoch, num_epochs):
         deepspeed.comm.all_reduce(acc_i, op=deepspeed.comm.ReduceOp.AVG)
         acc_i = acc_i.item()
         if global_rank == 0:
-            wandb.log({f"train/epochacc_{i}": acc_i})
             print(f"Train Epoch [{epoch + 1}/{num_epochs}], position {i},  Acc: {acc_i:.2f}")
 
     for i in range(len(epoch_plosses)):
@@ -331,7 +321,6 @@ for epoch in range(start_epoch, num_epochs):
         deepspeed.comm.all_reduce(loss_i, op=deepspeed.comm.ReduceOp.AVG)
         loss_i = loss_i.item()
         if global_rank == 0:
-            wandb.log({f"train/epochploss_{i}": loss_i})
             print(f"Train Epoch [{epoch + 1}/{num_epochs}], position {i}, pLoss: {loss_i:.2f}")
 
     epoch_acces = [[] for _ in range(model.length)]
@@ -351,7 +340,6 @@ for epoch in range(start_epoch, num_epochs):
         deepspeed.comm.all_reduce(acc_i, op=deepspeed.comm.ReduceOp.AVG)
         acc_i = acc_i.item()
         if global_rank == 0:
-            wandb.log({f"test/epochacc_{i}": acc_i})
             print(f"Test Epoch [{epoch + 1}/{num_epochs}], position {i},  Acc: {acc_i:.2f}")
 
     for i in range(len(epoch_plosses)):
@@ -359,7 +347,6 @@ for epoch in range(start_epoch, num_epochs):
         deepspeed.comm.all_reduce(loss_i, op=deepspeed.comm.ReduceOp.AVG)
         loss_i = loss_i.item()
         if global_rank == 0:
-            wandb.log({f"test/epochploss_{i}": loss_i})
             print(f"Test Epoch [{epoch + 1}/{num_epochs}], position {i}, pLoss: {loss_i:.2f}")
     # clear out the redundance cahce after each step
     torch.cuda.empty_cache()
