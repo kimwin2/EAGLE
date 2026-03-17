@@ -2,14 +2,12 @@ import argparse
 import deepspeed
 
 parser = argparse.ArgumentParser(description='sp')
-parser.add_argument('--basepath', type=str, default='/group-volume/ym1012.kim/repo/EAGLE/Llama-3.1-8B-Instruct')
-# parser.add_argument('--trainpath', type=str,
-#                     default="/home/lyh/code/nlp/developing/vllmbase/vllm/gedata/l318b.jsonl")
+parser.add_argument('--basepath', type=str, default='../../Llama-3.1-8B-Instruct')
 parser.add_argument('--trainpath', type=str,
-                    default="/group-volume/ym1012.kim/repo/EAGLE/sharegpt_train.jsonl")
+                    default="../../sharegpt_train.jsonl")
 parser.add_argument('--testpath', type=str,
-                    default="/group-volume/ym1012.kim/repo/EAGLE/sharegpt_test.jsonl")
-parser.add_argument('--savedir', type=str, default='0')
+                    default="../../sharegpt_test.jsonl")
+parser.add_argument('--savedir', type=str, default='./checkpoints')
 parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for distributed training on gpus")
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
@@ -242,9 +240,12 @@ rank = deepspeed.comm.get_local_rank()
 world_size = deepspeed.comm.get_world_size()
 if global_rank == 0:
     import wandb
-
-    wandb.login(key="")
-    wandb.init(project="l382", entity="yuhui-li", config=ds_config)
+    
+    # User should login via `wandb login` in CLI
+    # wandb.login(key="")
+    # wandb.init(project="l382", entity="yuhui-li", config=ds_config)
+    
+    wandb.init(project="EAGLE3-Draft", config=ds_config)
 
 os.makedirs(args.savedir, exist_ok=True)
 
