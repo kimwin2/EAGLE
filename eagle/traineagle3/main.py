@@ -2,11 +2,13 @@ import argparse
 import deepspeed
 
 parser = argparse.ArgumentParser(description='sp')
-parser.add_argument('--basepath', type=str, default='/home/lyh/weights/hf/llama31chat/8B/')
+parser.add_argument('--basepath', type=str, default='/group-volume/ym1012.kim/repo/EAGLE/Llama-3.1-8B-Instruct')
+# parser.add_argument('--trainpath', type=str,
+#                     default="/home/lyh/code/nlp/developing/vllmbase/vllm/gedata/l318b.jsonl")
 parser.add_argument('--trainpath', type=str,
-                    default="/home/lyh/code/nlp/developing/vllmbase/vllm/gedata/l318b.jsonl")
+                    default="/group-volume/ym1012.kim/repo/EAGLE/sharegpt_train.jsonl")
 parser.add_argument('--testpath', type=str,
-                    default="/home/lyh/code/nlp/developing/vllmbase/vllm/gedata/0318.json")
+                    default="/group-volume/ym1012.kim/repo/EAGLE/sharegpt_test.jsonl")
 parser.add_argument('--savedir', type=str, default='0')
 parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for distributed training on gpus")
 parser = deepspeed.add_config_arguments(parser)
@@ -17,14 +19,30 @@ import re
 deepspeed_config = args.deepspeed_config
 with open(deepspeed_config) as f:
     ds_config = json.load(f)
-train_config = {
+# train_config = {
+#     "bs": ds_config["train_micro_batch_size_per_gpu"],
+#     "num_epochs": 40,
+#     "num_workers": 2,
+#     "max_len": 2048,
+#     "config_path": "config.json",
+#     "gradient_checkpoint": True
+# }
+
+class TrainConfig(dict):
+    def __getattr__(self, key):
+        return self.get(key)
+
+train_config = TrainConfig({
     "bs": ds_config["train_micro_batch_size_per_gpu"],
     "num_epochs": 40,
     "num_workers": 2,
     "max_len": 2048,
     "config_path": "config.json",
-    "gradient_checkpoint": True
-}
+    "gradient_checkpoint": True,
+    "gradient_checkpointing": True  
+})
+
+
 
 from safetensors import safe_open
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -200,7 +218,6 @@ class DataCollatorWithPadding:
             "loss_mask": batch_loss_mask,
         }
         return batch
-
 
 tokenizer = AutoTokenizer.from_pretrained(args.basepath)
 traindataset = build_dataset_rank(tokenizer, args.trainpath)
