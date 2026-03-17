@@ -35,7 +35,7 @@ def clean_and_save_jsonl(ds, filename):
             except Exception:
                 continue # 혹시 모를 다른 에러가 있는 행도 스킵
 
-    print(f"✅ {filename} 저장 완료! (정상 데이터: {valid_count}개)")
+    print(f"[SUCCESS] {filename} 저장 완료! (정상 데이터: {valid_count}개)")
 
 # 파일 덮어쓰기 실행
 clean_and_save_jsonl(split_dataset["train"], "sharegpt_train.jsonl")

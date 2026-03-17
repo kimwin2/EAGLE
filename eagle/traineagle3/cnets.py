@@ -34,8 +34,13 @@ from configs import EConfig
 from safetensors import safe_open
 from datasets import load_dataset
 import multiprocessing
+import sys
+import os
 
-# Copied from transformers.models.bart.modeling_bart._make_causal_mask
+# Add EAGLE root directory to sys.path to import littlebit and binary modules
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+from littlebit import LittleBitLinear
+from binary import STEBinary# Copied from transformers.models.bart.modeling_bart._make_causal_mask
 def _make_causal_mask(
         input_ids_shape: torch.Size, dtype: torch.dtype, device: torch.device, past_key_values_length: int = 0
 ):
@@ -488,7 +493,11 @@ class Model(nn.Module):
             dschf = HfDeepSpeedConfig(ds_config)
         else:
             dschf = None
-        self.midlayer = LlamaDecoderLayeremb(config)
+        
+        self.layers = nn.ModuleList(
+            [LlamaDecoderLayeremb(config) for _ in range(config.num_hidden_layers)]
+        )
+        self._apply_littlebit_to_layers(self.layers)
         self.gradient_checkpointing = self.train_config.gradient_checkpointing
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -532,6 +541,30 @@ class Model(nn.Module):
 
         for param in self.embed_tokens.parameters():
             param.requires_grad = False
+
+    def _apply_littlebit_to_layers(self, module: nn.Module):
+        """Recursively apply LittleBitLinear to all nn.Linear instances within the layers."""
+        for name, child in module.named_children():
+            if isinstance(child, nn.Linear):
+                # Replace with LittleBitLinear
+                in_features, out_features, bias = child.in_features, child.out_features, child.bias is not None
+                new_layer = LittleBitLinear(in_features, out_features, bias=bias)
+                # Keep weights and biases if they exist
+                if child.weight is not None:
+                    new_layer.weight = child.weight
+                if child.bias is not None:
+                    new_layer.bias = child.bias
+                
+                # Apply quant convert immediately
+                new_layer.__quant_convert__(
+                    do_train=True, 
+                    quant_func=STEBinary, 
+                    eff_bit=0.1, 
+                    residual=False
+                )
+                setattr(module, name, new_layer)
+            else:
+                self._apply_littlebit_to_layers(child)
 
     def scandata(self, datapath, tokenizerpath):
         N = self.draft_vocab_size
@@ -794,39 +827,45 @@ class Model(nn.Module):
                 inputs_embeds.requires_grad = True
             inputs_embeds = inputs_embeds.to(hidden_states.dtype)
 
-            if self.gradient_checkpointing and self.training:
+            # Iteration over layers instead of single midlayer
+            for i, layer in enumerate(self.layers):
+                if len(cache_hidden[0]) <= i:
+                    # Initialize layer's inner cache if not yet
+                    cache_hidden[0].append([])
+                    cache_hidden[1].append([])
+                
+                layer_cache = [cache_hidden[0][i], cache_hidden[1][i]]
 
-                def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        # None for past_key_value
-                        return module(*inputs, None, output_attentions)
+                if self.gradient_checkpointing and self.training:
+                    # In deepspeed checkpointing, arguments must be positional.
+                    layer_outputs, new_layer_cache = torch.utils.checkpoint.checkpoint(
+                        layer,
+                        inputs_embeds if i == 0 else hidden_states, # input_emb
+                        hidden_states, # hidden_states
+                        layer_cache, # cache_hidden
+                        attention_mask, # attention_mask
+                        position_ids, # position_ids
+                        None, # past_key_value
+                        output_attentions, # output_attentions
+                        True # use_cache
+                    )
+                else:
+                    layer_outputs, new_layer_cache = layer(
+                        input_emb=inputs_embeds if i == 0 else hidden_states,
+                        hidden_states=hidden_states,
+                        cache_hidden=layer_cache,
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        past_key_value=None,
+                        output_attentions=output_attentions,
+                        use_cache=True,
+                    )
+                
+                hidden_states = layer_outputs[0]
+                cache_hidden[0][i] = new_layer_cache[0]
+                cache_hidden[1][i] = new_layer_cache[1]
 
-                    return custom_forward
-
-                layer_outputs, cache_hidden = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(self.midlayer),
-                    inputs_embeds,
-                    hidden_states,
-                    cache_hidden,
-                    attention_mask,
-                    position_ids,
-                )
-            else:
-
-                layer_outputs, cache_hidden = self.midlayer(
-                    input_emb=inputs_embeds,
-                    hidden_states=hidden_states,
-                    cache_hidden=cache_hidden,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_value=None,
-                    output_attentions=output_attentions,
-                    use_cache=True,
-                )
-
-            hidden_states_out = layer_outputs[0]
-            # cache_hidden.append(layer_outputs[1])
-            # kv_cahce = layer_outputs[-1]
+            hidden_states_out = hidden_states
 
             with torch.no_grad():
                 # hidden_states_target = padding(hidden_states, left=False)
