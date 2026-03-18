@@ -182,7 +182,7 @@ def build_dataset_rank(
         batched=True,
         num_proc=num_proc,
         remove_columns=original_columns1,
-        load_from_cache_file=False
+        load_from_cache_file=True
     )
 
 
