@@ -9,6 +9,7 @@ parser.add_argument('--testpath', type=str,
                     default="../../sharegpt_test.jsonl")
 parser.add_argument('--savedir', type=str, default='./checkpoints')
 parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for distributed training on gpus")
+parser.add_argument("--num_hidden_layers", type=int, default=1, help="Number of hidden layers for the draft model")
 parser.add_argument("--disable_littlebit", action="store_true", help="Disable LittleBit quantization and use baseline Linear layers")
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
@@ -224,6 +225,10 @@ traindataset = build_dataset_rank(tokenizer, args.trainpath)
 testdataset = build_dataset_rank(tokenizer, args.testpath)
 
 config = EConfig.from_pretrained(train_config["config_path"])
+
+if args.num_hidden_layers is not None:
+    config.num_hidden_layers = args.num_hidden_layers
+
 model = Model(config, ds_config, train_config, path=args.basepath, load_emb=True, load_head=True)
 model.scandata(args.trainpath, args.basepath)
 

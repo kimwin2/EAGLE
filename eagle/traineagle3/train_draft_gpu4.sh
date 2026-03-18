@@ -13,4 +13,5 @@ python -m deepspeed.launcher.runner --num_gpus 4 main.py \
     --basepath ../../Llama-3.1-8B-Instruct \
     --trainpath ../../sharegpt_train.jsonl \
     --testpath ../../sharegpt_test.jsonl \
-    --savedir ./checkpoints
+    --savedir ./checkpoints \
+    --num_hidden_layers 1
