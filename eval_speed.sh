@@ -6,8 +6,8 @@
 # - Base Model: ../../Llama-3.1-8B-Instruct
 # - EAGLE Model: ../../EAGLE3-LLAMA3.1-Instruct-8B
 
-BASE_MODEL_PATH="../../Llama-3.1-8B-Instruct"
-EAGLE_MODEL_PATH="../../EAGLE3-LLAMA3.1-Instruct-8B"
+BASE_MODEL_PATH="/group-volume/ym1012.kim/homepc/EAGLE/Llama-3.1-8B-Instruct"
+EAGLE_MODEL_PATH="/group-volume/ym1012.kim/homepc/EAGLE/EAGLE3-LLaMA3.1-Instruct-8B"
 
 # Ensure the prompt uses the LLaMA 3.1 instruct compatible scripts
 SCRIPT_BASELINE="eagle/evaluation/gen_baseline_answer_llama3chat.py"
