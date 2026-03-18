@@ -497,7 +497,8 @@ class Model(nn.Module):
         self.layers = nn.ModuleList(
             [LlamaDecoderLayeremb(config) for _ in range(config.num_hidden_layers)]
         )
-        self._apply_littlebit_to_layers(self.layers)
+        if not self.train_config.get("disable_littlebit", False):
+            self._apply_littlebit_to_layers(self.layers)
         self.gradient_checkpointing = self.train_config.gradient_checkpointing
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size

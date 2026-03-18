@@ -9,6 +9,7 @@ parser.add_argument('--testpath', type=str,
                     default="../../sharegpt_test.jsonl")
 parser.add_argument('--savedir', type=str, default='./checkpoints')
 parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for distributed training on gpus")
+parser.add_argument("--disable_littlebit", action="store_true", help="Disable LittleBit quantization and use baseline Linear layers")
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 import json
@@ -37,7 +38,8 @@ train_config = TrainConfig({
     "max_len": 2048,
     "config_path": "config.json",
     "gradient_checkpoint": True,
-    "gradient_checkpointing": True  
+    "gradient_checkpointing": True,
+    "disable_littlebit": args.disable_littlebit
 })
 
 
