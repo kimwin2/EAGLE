@@ -14,6 +14,9 @@ SCRIPT_BASELINE="eagle/evaluation/gen_baseline_answer_llama3chat.py"
 SCRIPT_EAGLE="eagle/evaluation/gen_ea_answer_llama3chat.py"
 SCRIPT_SPEED="eagle/evaluation/speed.py"
 
+# Ensure the custom eagle modules can be imported
+export PYTHONPATH="$(pwd)"
+
 echo "=========================================================="
 echo "Starting evaluation for Llama-3.1-8B-Instruct vs EAGLE-3"
 echo "=========================================================="
@@ -36,6 +39,9 @@ python $SCRIPT_EAGLE \
     --use_eagle3
 
 echo "3) Calculating speedup..."
-python $SCRIPT_SPEED
+python $SCRIPT_SPEED \
+    --tokenizer-path $BASE_MODEL_PATH \
+    --base-jsonl "mt_bench/llama3.1-8b-inst-baseline-temperature-0.0.jsonl" \
+    --ea-jsonl "mt_bench/llama3.1-8b-inst-eagle3-temperature-0.0.jsonl"
 
 echo "Evaluation finished."
