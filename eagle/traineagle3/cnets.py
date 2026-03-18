@@ -542,9 +542,10 @@ class Model(nn.Module):
         for param in self.embed_tokens.parameters():
             param.requires_grad = False
 
-    def _apply_littlebit_to_layers(self, module: nn.Module):
+    def _apply_littlebit_to_layers(self, module: nn.Module, prefix=""):
         """Recursively apply LittleBitLinear to all nn.Linear instances within the layers."""
         for name, child in module.named_children():
+            full_name = f"{prefix}.{name}" if prefix else name
             if isinstance(child, nn.Linear):
                 # Replace with LittleBitLinear
                 in_features, out_features, bias = child.in_features, child.out_features, child.bias is not None
@@ -556,15 +557,17 @@ class Model(nn.Module):
                     new_layer.bias = child.bias
                 
                 # Apply quant convert immediately
+                eff_bit = 0.1
                 new_layer.__quant_convert__(
                     do_train=True, 
                     quant_func=STEBinary, 
-                    eff_bit=0.1, 
+                    eff_bit=eff_bit, 
                     residual=False
                 )
+                print(f"[LittleBit Quantization] Applied to layer: {full_name} | Effective Bit: {eff_bit}")
                 setattr(module, name, new_layer)
             else:
-                self._apply_littlebit_to_layers(child)
+                self._apply_littlebit_to_layers(child, prefix=full_name)
 
     def scandata(self, datapath, tokenizerpath):
         N = self.draft_vocab_size
