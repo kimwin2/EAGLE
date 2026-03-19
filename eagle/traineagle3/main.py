@@ -11,6 +11,7 @@ parser.add_argument('--savedir', type=str, default='./checkpoints')
 parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for distributed training on gpus")
 parser.add_argument("--num_hidden_layers", type=int, default=1, help="Number of hidden layers for the draft model")
 parser.add_argument("--disable_littlebit", action="store_true", help="Disable LittleBit quantization and use baseline Linear layers")
+parser.add_argument("--num_epochs", type=int, default=40, help="Number of epochs to train")
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 import json
@@ -34,7 +35,7 @@ class TrainConfig(dict):
 
 train_config = TrainConfig({
     "bs": ds_config["train_micro_batch_size_per_gpu"],
-    "num_epochs": 40,
+    "num_epochs": args.num_epochs,
     "num_workers": 2,
     "max_len": 2048,
     "config_path": "config.json",
@@ -237,9 +238,24 @@ criterion = nn.SmoothL1Loss(reduction="none")
 
 num_epochs = train_config["num_epochs"]
 
+world_size_env = int(os.environ.get("WORLD_SIZE", 1))
+grad_accum = ds_config.get("gradient_accumulation_steps", 1)
+micro_bs = ds_config.get("train_micro_batch_size_per_gpu", 1)
+global_bs = micro_bs * grad_accum * world_size_env
+total_steps_per_epoch = len(traindataset) // global_bs
+total_num_steps = total_steps_per_epoch * num_epochs
+
+if "scheduler" in ds_config:
+    ds_config["scheduler"]["type"] = "WarmupCosineLR"
+    if "params" not in ds_config["scheduler"]:
+        ds_config["scheduler"]["params"] = {}
+    ds_config["scheduler"]["params"]["total_num_steps"] = total_num_steps
+    ds_config["scheduler"]["params"]["warmup_num_steps"] = int(total_num_steps * 0.05)
+
 model_engine, optimizer, _, _ = deepspeed.initialize(args=args,
                                                      model=model,
                                                      model_parameters=model.parameters(),
+                                                     config=ds_config
                                                      )
 
 global_rank = deepspeed.comm.get_rank()
