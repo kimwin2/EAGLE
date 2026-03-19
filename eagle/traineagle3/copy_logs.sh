@@ -1,31 +1,19 @@
 #!/bin/bash
-# Copy TensorBoard log files to local log directory
-# Usage: bash copy_logs.sh <checkpoint_dir> [local_folder_name]
-#
-# Example:
-#   bash copy_logs.sh ./checkpoints_qat_2gpu lr5e5-5ep-2gpu-1layer-littlebit
-#   bash copy_logs.sh ./checkpoints_qat_03   lr5e5-5ep-4gpu-1layer-littlebit-03
+# 사용법: 아래 FILES 배열에 복사할 파일 경로를 넣고 실행
+# 각 파일의 이름으로 C:\log\ 아래에 폴더를 만들고 복사합니다
 
-LOCAL_LOG_BASE="/c/log/speculative_decoding"
-# If running from WSL or Git Bash, use Windows-style path:
-# LOCAL_LOG_BASE="C:/log/speculative_decoding"
+DST="/c/log"
 
-CHECKPOINT_DIR="${1:?Usage: $0 <checkpoint_dir> [local_folder_name]}"
-FOLDER_NAME="${2:-$(basename "$CHECKPOINT_DIR")}"
+FILES=(
+  "/group-volume/ym1012.kim/homepc/EAGLE/eagle/traineagle3/checkpoints_qat_2gpu/runs/events.out.tfevents.1773905810.run117178-lr5e5-5ep-2gpu-1layer-littlebi.605.0"
+  "/group-volume/ym1012.kim/homepc/EAGLE/eagle/traineagle3/checkpoints/runs/events.out.tfevents.xxx.example2"
+  "/group-volume/ym1012.kim/homepc/EAGLE/eagle/traineagle3/checkpoints_qat_03/runs/events.out.tfevents.xxx.example3"
+)
 
-SRC_RUNS_DIR="${CHECKPOINT_DIR}/runs"
-DST_DIR="${LOCAL_LOG_BASE}/${FOLDER_NAME}"
+for f in "${FILES[@]}"; do
+  name=$(basename "$f")
+  mkdir -p "$DST/$name"
+  cp -v "$f" "$DST/$name/"
+done
 
-if [ ! -d "$SRC_RUNS_DIR" ]; then
-    echo "[ERROR] Source runs directory not found: $SRC_RUNS_DIR"
-    exit 1
-fi
-
-echo "[INFO] Creating destination: $DST_DIR"
-mkdir -p "$DST_DIR"
-
-echo "[INFO] Copying TensorBoard logs..."
-cp -v "$SRC_RUNS_DIR"/events.out.tfevents.* "$DST_DIR/"
-
-echo "[DONE] Logs copied to: $DST_DIR"
-echo "[TIP]  Run: tensorboard --logdir $LOCAL_LOG_BASE"
+echo "Done!"
