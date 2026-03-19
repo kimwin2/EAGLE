@@ -254,6 +254,7 @@ if "scheduler" in ds_config:
     ds_config["scheduler"]["params"]["total_num_steps"] = total_num_steps
     ds_config["scheduler"]["params"]["warmup_num_steps"] = int(total_num_steps * 0.05)
 
+args.deepspeed_config = None
 model_engine, optimizer, _, _ = deepspeed.initialize(args=args,
                                                      model=model,
                                                      model_parameters=model.parameters(),
