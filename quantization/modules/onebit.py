@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-from quantization.functions import adaptive_po2
 from quantization.utils.binary_packer import binary_packer, binary_unpacker
 
 
@@ -16,9 +15,8 @@ class OneBitLinear(nn.Module):
         else:
             self.register_parameter('bias', None)
 
-    def __quant_convert__(self, do_train, quant_func, is_po2=False, **kwargs):
+    def __quant_convert__(self, do_train, quant_func, **kwargs):
         self.quant_func = quant_func
-        self.is_po2 = is_po2
         self.layernorm = nn.LayerNorm(self.out_features)
         self._binarized = False
 
@@ -56,9 +54,6 @@ class OneBitLinear(nn.Module):
 
         in_channel_scale = self.in_channel_scale
         out_channel_scale = self.out_channel_scale
-        if self.is_po2:
-            in_channel_scale = adaptive_po2(in_channel_scale)
-            out_channel_scale = adaptive_po2(out_channel_scale)
 
         hidden_states = ((x * in_channel_scale) @ self.quantize(self.weight.to(x.dtype)).t()) * out_channel_scale
         if self.bias is not None:
