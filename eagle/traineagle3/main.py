@@ -68,7 +68,7 @@ from tqdm import tqdm
 # import accelerate
 import numpy as np
 from transformers import PreTrainedTokenizerBase, get_linear_schedule_with_warmup
-
+from torch.utils.tensorboard import SummaryWriter
 
 
 def build_dataset_rank(
@@ -247,6 +247,10 @@ rank = deepspeed.comm.get_local_rank()
 world_size = deepspeed.comm.get_world_size()
 os.makedirs(args.savedir, exist_ok=True)
 
+writer = None
+if global_rank == 0:
+    writer = SummaryWriter(log_dir=os.path.join(args.savedir, "runs"))
+
 sampler = DistributedSampler(testdataset, num_replicas=world_size, rank=global_rank, shuffle=False)
 test_loader = DataLoader(testdataset, batch_size=train_config["bs"], sampler=sampler, num_workers=4, pin_memory=True,
                          collate_fn=DataCollatorWithPadding())
@@ -279,16 +283,22 @@ if checkpoint_path:
 
 
 
+global_step = start_epoch * len(train_loader)
 for epoch in range(start_epoch, num_epochs):
     train_sampler.set_epoch(epoch+1)
-    print(f"Now training epoch {epoch}")
+    if global_rank == 0:
+        print(f"Now training epoch {epoch+1}/{num_epochs}")
 
     model.train()
     epoch_acces = [[] for _ in range(model.length)]
     epoch_plosses = [[] for _ in range(model.length)]
 
+    if global_rank == 0:
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
+    else:
+        pbar = train_loader
 
-    for batch_idx, data in enumerate(tqdm(train_loader)):
+    for batch_idx, data in enumerate(pbar):
 
         model.zero_grad()
 
@@ -305,13 +315,14 @@ for epoch in range(start_epoch, num_epochs):
 
         model_engine.step()
 
-        # Remove wandb logging section
-        # if global_rank == 0:
-        #     logdict = {"train/lr": optimizer.optimizer.param_groups[0]["lr"]}
-        #     for i in range(len(plosses)):
-        #         logdict[f"train/ploss_{i}"] = plosses[i].item()
-        #     for i in range(len(acces)):
-        #         logdict[f"train/acc_{i}"] = acces[i]
+        if global_rank == 0 and writer is not None:
+            writer.add_scalar("Train/LR", optimizer.param_groups[0]["lr"], global_step)
+            for i in range(len(plosses)):
+                writer.add_scalar(f"Train/pLoss/pos_{i}", plosses[i].item(), global_step)
+            for i in range(len(acces)):
+                writer.add_scalar(f"Train/Acc/pos_{i}", acces[i], global_step)
+        global_step += 1
+
         epoch_acces = [epoch_acces[i] + [acces[i]] for i in range(len(acces))]
         epoch_plosses = [epoch_plosses[i] + [plosses[i].item()] for i in range(len(plosses))]
 
@@ -322,6 +333,8 @@ for epoch in range(start_epoch, num_epochs):
         acc_i = acc_i.item()
         if global_rank == 0:
             print(f"Train Epoch [{epoch + 1}/{num_epochs}], position {i},  Acc: {acc_i:.2f}")
+            if writer is not None:
+                writer.add_scalar(f"Train_Epoch/Acc/pos_{i}", acc_i, epoch + 1)
 
     for i in range(len(epoch_plosses)):
         loss_i = torch.tensor(epoch_plosses[i]).cuda().mean()
@@ -329,6 +342,8 @@ for epoch in range(start_epoch, num_epochs):
         loss_i = loss_i.item()
         if global_rank == 0:
             print(f"Train Epoch [{epoch + 1}/{num_epochs}], position {i}, pLoss: {loss_i:.2f}")
+            if writer is not None:
+                writer.add_scalar(f"Train_Epoch/pLoss/pos_{i}", loss_i, epoch + 1)
 
     epoch_acces = [[] for _ in range(model.length)]
     epoch_plosses = [[] for _ in range(model.length)]
@@ -348,6 +363,8 @@ for epoch in range(start_epoch, num_epochs):
         acc_i = acc_i.item()
         if global_rank == 0:
             print(f"Test Epoch [{epoch + 1}/{num_epochs}], position {i},  Acc: {acc_i:.2f}")
+            if writer is not None:
+                writer.add_scalar(f"Test_Epoch/Acc/pos_{i}", acc_i, epoch + 1)
 
     for i in range(len(epoch_plosses)):
         loss_i = torch.tensor(epoch_plosses[i]).cuda().mean()
@@ -355,6 +372,8 @@ for epoch in range(start_epoch, num_epochs):
         loss_i = loss_i.item()
         if global_rank == 0:
             print(f"Test Epoch [{epoch + 1}/{num_epochs}], position {i}, pLoss: {loss_i:.2f}")
+            if writer is not None:
+                writer.add_scalar(f"Test_Epoch/pLoss/pos_{i}", loss_i, epoch + 1)
     # clear out the redundance cahce after each step
     torch.cuda.empty_cache()
 
