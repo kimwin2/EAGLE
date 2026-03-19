@@ -577,7 +577,7 @@ class Model(nn.Module):
                     new_layer.bias = child.bias
                 
                 # Apply quant convert immediately
-                eff_bit = 0.1
+                eff_bit = self.train_config.get("eff_bit", 0.1)
                 new_layer.__quant_convert__(
                     do_train=True, 
                     quant_func=STEBinary, 
