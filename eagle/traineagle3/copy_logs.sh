@@ -1,6 +1,6 @@
 #!/bin/bash
-# 사용법: 아래 FILES 배열에 복사할 파일 경로를 넣고 실행
-# 각 파일의 이름으로 C:\log\ 아래에 폴더를 만들고 복사합니다
+# 사용법: FILES 배열에 복사할 파일 경로를 넣고 실행
+# 체크포인트 폴더명(checkpoints_qat_2gpu 등)으로 C:\log\ 아래에 폴더를 만들고 복사
 
 DST="/c/log"
 
@@ -11,9 +11,10 @@ FILES=(
 )
 
 for f in "${FILES[@]}"; do
-  name=$(basename "$f")
-  mkdir -p "$DST/$name"
-  cp -v "$f" "$DST/$name/"
+  # runs/ 의 부모 폴더명을 꺼냄 (예: checkpoints_qat_2gpu)
+  folder=$(basename "$(dirname "$(dirname "$f")")")
+  mkdir -p "$DST/$folder"
+  cp -v "$f" "$DST/$folder/"
 done
 
 echo "Done!"
