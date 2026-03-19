@@ -14,5 +14,5 @@ python -m deepspeed.launcher.runner --num_gpus 4 main.py \
     --trainpath ../../sharegpt_train.jsonl \
     --testpath ../../sharegpt_test.jsonl \
     --savedir ./checkpoints \
-    --num_epochs 40 \
+    --num_epochs 20 \
     --num_hidden_layers 1

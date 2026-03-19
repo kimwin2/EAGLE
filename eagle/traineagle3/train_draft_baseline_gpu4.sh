@@ -15,5 +15,5 @@ python -m deepspeed.launcher.runner --num_gpus 4 main.py \
     --testpath ../../sharegpt_test.jsonl \
     --savedir ./checkpoints_baseline \
     --disable_littlebit \
-    --num_epochs 40 \
+    --num_epochs 20 \
     --num_hidden_layers 1
