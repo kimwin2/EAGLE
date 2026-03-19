@@ -40,7 +40,10 @@ import os
 # Add EAGLE root directory to sys.path to import littlebit and binary modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 from littlebit import LittleBitLinear
-from binary import STEBinary# Copied from transformers.models.bart.modeling_bart._make_causal_mask
+from quantization.modules.onebit import OneBitLinear
+from binary import STEBinary
+
+# Copied from transformers.models.bart.modeling_bart._make_causal_mask
 def _make_causal_mask(
         input_ids_shape: torch.Size, dtype: torch.dtype, device: torch.device, past_key_values_length: int = 0
 ):
@@ -560,34 +563,47 @@ class Model(nn.Module):
             print("Successfully loaded pre-trained draft weights.")
 
         if not self.train_config.get("disable_littlebit", False):
-            self._apply_littlebit_to_layers(self.layers)
+            quant_method = self.train_config.get("quant_method", "littlebit")
+            if quant_method != "none":
+                self._apply_quant_to_layers(self.layers, quant_method=quant_method)
 
-    def _apply_littlebit_to_layers(self, module: nn.Module, prefix=""):
-        """Recursively apply LittleBitLinear to all nn.Linear instances within the layers."""
+    def _apply_quant_to_layers(self, module: nn.Module, quant_method="littlebit", prefix=""):
+        """Recursively apply quantization to all nn.Linear instances within the layers."""
         for name, child in module.named_children():
             full_name = f"{prefix}.{name}" if prefix else name
             if isinstance(child, nn.Linear):
-                # Replace with LittleBitLinear
                 in_features, out_features, bias = child.in_features, child.out_features, child.bias is not None
-                new_layer = LittleBitLinear(in_features, out_features, bias=bias)
-                # Keep weights and biases if they exist
-                if child.weight is not None:
-                    new_layer.weight = child.weight
-                if child.bias is not None:
-                    new_layer.bias = child.bias
-                
-                # Apply quant convert immediately
-                eff_bit = self.train_config.get("eff_bit", 0.1)
-                new_layer.__quant_convert__(
-                    do_train=True, 
-                    quant_func=STEBinary, 
-                    eff_bit=eff_bit, 
-                    residual=False
-                )
-                print(f"[LittleBit Quantization] Applied to layer: {full_name} | Effective Bit: {eff_bit}")
+
+                if quant_method == "littlebit":
+                    new_layer = LittleBitLinear(in_features, out_features, bias=bias)
+                    if child.weight is not None:
+                        new_layer.weight = child.weight
+                    if child.bias is not None:
+                        new_layer.bias = child.bias
+                    eff_bit = self.train_config.get("eff_bit", 0.1)
+                    new_layer.__quant_convert__(
+                        do_train=True,
+                        quant_func=STEBinary,
+                        eff_bit=eff_bit,
+                        residual=False
+                    )
+                    print(f"[LittleBit] Applied to: {full_name} | eff_bit: {eff_bit}")
+
+                elif quant_method == "onebit":
+                    new_layer = OneBitLinear(in_features, out_features, bias=bias)
+                    if child.weight is not None:
+                        new_layer.weight = child.weight
+                    if child.bias is not None:
+                        new_layer.bias = child.bias
+                    new_layer.__quant_convert__(
+                        do_train=True,
+                        quant_func=STEBinary,
+                    )
+                    print(f"[OneBit] Applied to: {full_name}")
+
                 setattr(module, name, new_layer)
             else:
-                self._apply_littlebit_to_layers(child, prefix=full_name)
+                self._apply_quant_to_layers(child, quant_method=quant_method, prefix=full_name)
 
     def scandata(self, datapath, tokenizerpath):
         N = self.draft_vocab_size
