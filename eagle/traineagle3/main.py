@@ -11,6 +11,7 @@ parser.add_argument('--savedir', type=str, default='./checkpoints')
 parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for distributed training on gpus")
 parser.add_argument("--num_hidden_layers", type=int, default=1, help="Number of hidden layers for the draft model")
 parser.add_argument("--disable_littlebit", action="store_true", help="Disable LittleBit quantization and use baseline Linear layers")
+parser.add_argument("--draftpath", type=str, default=None, help="Path to pre-trained draft model for QAT")
 parser.add_argument("--num_epochs", type=int, default=40, help="Number of epochs to train")
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
@@ -41,7 +42,8 @@ train_config = TrainConfig({
     "config_path": "config.json",
     "gradient_checkpoint": True,
     "gradient_checkpointing": True,
-    "disable_littlebit": args.disable_littlebit
+    "disable_littlebit": args.disable_littlebit,
+    "draftpath": args.draftpath
 })
 
 

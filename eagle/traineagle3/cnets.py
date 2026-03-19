@@ -497,8 +497,6 @@ class Model(nn.Module):
         self.layers = nn.ModuleList(
             [LlamaDecoderLayeremb(config) for _ in range(config.num_hidden_layers)]
         )
-        if not self.train_config.get("disable_littlebit", False):
-            self._apply_littlebit_to_layers(self.layers)
         self.gradient_checkpointing = self.train_config.gradient_checkpointing
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -542,6 +540,27 @@ class Model(nn.Module):
 
         for param in self.embed_tokens.parameters():
             param.requires_grad = False
+
+        draftpath = self.train_config.get("draftpath", None)
+        if draftpath is not None:
+            from safetensors.torch import load_file
+            import os
+            print(f"Loading pre-trained draft model from {draftpath} for QAT...")
+            file_path_safe = os.path.join(draftpath, "model.safetensors")
+            file_path_pt = os.path.join(draftpath, "pytorch_model.bin")
+            if os.path.exists(file_path_safe):
+                state_dict = load_file(file_path_safe)
+            elif os.path.exists(file_path_pt):
+                state_dict = torch.load(file_path_pt, map_location="cpu")
+            else:
+                raise FileNotFoundError(f"Could not find model.safetensors or pytorch_model.bin in {draftpath}")
+            
+            # Load state dict before LittleBit quantization
+            self.load_state_dict(state_dict, strict=False)
+            print("Successfully loaded pre-trained draft weights.")
+
+        if not self.train_config.get("disable_littlebit", False):
+            self._apply_littlebit_to_layers(self.layers)
 
     def _apply_littlebit_to_layers(self, module: nn.Module, prefix=""):
         """Recursively apply LittleBitLinear to all nn.Linear instances within the layers."""
