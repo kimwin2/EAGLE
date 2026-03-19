@@ -248,7 +248,6 @@ total_steps_per_epoch = len(traindataset) // global_bs
 total_num_steps = total_steps_per_epoch * num_epochs
 
 if "scheduler" in ds_config:
-    ds_config["scheduler"]["type"] = "WarmupCosineLR"
     if "params" not in ds_config["scheduler"]:
         ds_config["scheduler"]["params"] = {}
     ds_config["scheduler"]["params"]["total_num_steps"] = total_num_steps
