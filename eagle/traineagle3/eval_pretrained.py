@@ -291,11 +291,33 @@ def load_draft_weights_with_diagnostics(model, draftpath):
     print(f"  Missing in pretrained: {len(missing_in_pretrained)}")
     print(f"  Unexpected (extra):   {len(unexpected)}")
     
-    # If no direct match, try stripping common prefixes
-    if len(matched) == 0 and len(state_dict) > 0:
-        print(f"\n[DIAG] No direct key match! Trying prefix stripping...")
+    # Try key remapping to fix mismatches
+    if len(missing_in_pretrained) > 0 and len(state_dict) > 0:
+        print(f"\n[DIAG] Attempting key remapping to fix {len(missing_in_pretrained)} missing keys...")
         
-        # Try stripping 'module.' prefix (common DeepSpeed artifact)
+        # Remap: midlayer.* → layers.0.* (pretrained model used single 'midlayer',
+        # current code uses nn.ModuleList 'layers')
+        remapped = {}
+        remap_count = 0
+        for k, v in state_dict.items():
+            if k.startswith("midlayer."):
+                new_key = k.replace("midlayer.", "layers.0.", 1)
+                remapped[new_key] = v
+                remap_count += 1
+                print(f"  REMAP: {k} → {new_key}")
+            else:
+                remapped[k] = v
+        
+        if remap_count > 0:
+            new_matched = model_keys & set(remapped.keys())
+            if len(new_matched) > len(matched):
+                print(f"  midlayer→layers.0 remap: {len(new_matched)} matches (was {len(matched)})")
+                state_dict = remapped
+                matched = new_matched
+                missing_in_pretrained = model_keys - set(state_dict.keys())
+                unexpected = set(state_dict.keys()) - model_keys
+        
+        # Also try stripping common prefixes (module., model., etc.)
         for prefix in ["module.", "model.", "eagle_model.", "draft_model."]:
             stripped = {}
             for k, v in state_dict.items():
