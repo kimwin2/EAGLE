@@ -9,6 +9,7 @@ Usage (via DeepSpeed):
     python -m deepspeed.launcher.runner --num_gpus 4 eval_pretrained.py \
         --deepspeed_config ds_config.json \
         --basepath ../../Llama-3.1-8B-Instruct \
+        --trainpath ../../sharegpt_train.jsonl \
         --testpath ../../sharegpt_test.jsonl \
         --draftpath ../../EAGLE3-LLaMA3.1-Instruct-8B \
         --num_hidden_layers 1 \
@@ -57,16 +58,18 @@ class TrainConfig(dict):
         return self.get(key)
 
 
+# NOTE: We set draftpath=None here so Model.__init__ does NOT do its own
+# weight loading. We handle weight loading MANUALLY below for better diagnostics.
 train_config = TrainConfig({
     "bs": ds_config["train_micro_batch_size_per_gpu"],
-    "num_epochs": 1,  # not used for eval, but required by Model
+    "num_epochs": 1,
     "num_workers": 2,
     "max_len": 2048,
     "config_path": "config.json",
     "gradient_checkpoint": False,
     "gradient_checkpointing": False,
     "disable_littlebit": True if args.quant_method == "none" else False,
-    "draftpath": args.draftpath,
+    "draftpath": None,  # We load weights manually below
     "eff_bit": args.eff_bit,
     "quant_method": args.quant_method,
 })
@@ -200,6 +203,163 @@ class DataCollatorWithPadding:
         return batch
 
 
+def load_draft_weights_with_diagnostics(model, draftpath):
+    """Load pretrained draft model weights with detailed diagnostics.
+    
+    Handles common issues:
+    - 'module.' prefix from DeepSpeed saving
+    - Multi-shard safetensors files
+    - Key name mismatches
+    """
+    from safetensors.torch import load_file
+    
+    # ── Step 1: Find and load the state dict ──────────────────────────────
+    file_path_safe = os.path.join(draftpath, "model.safetensors")
+    file_path_pt = os.path.join(draftpath, "pytorch_model.bin")
+    index_safe = os.path.join(draftpath, "model.safetensors.index.json")
+    index_pt = os.path.join(draftpath, "pytorch_model.bin.index.json")
+    
+    state_dict = {}
+    
+    if os.path.exists(file_path_safe):
+        print(f"[DIAG] Loading from: {file_path_safe}")
+        state_dict = load_file(file_path_safe)
+    elif os.path.exists(index_safe):
+        # Handle sharded safetensors
+        print(f"[DIAG] Loading sharded safetensors from: {index_safe}")
+        with open(index_safe) as f:
+            index = json.load(f)
+        shard_files = set(index["weight_map"].values())
+        for shard in shard_files:
+            shard_path = os.path.join(draftpath, shard)
+            print(f"[DIAG]   Loading shard: {shard}")
+            shard_dict = load_file(shard_path)
+            state_dict.update(shard_dict)
+    elif os.path.exists(file_path_pt):
+        print(f"[DIAG] Loading from: {file_path_pt}")
+        state_dict = torch.load(file_path_pt, map_location="cpu")
+    elif os.path.exists(index_pt):
+        print(f"[DIAG] Loading sharded pytorch_model from: {index_pt}")
+        with open(index_pt) as f:
+            index = json.load(f)
+        shard_files = set(index["weight_map"].values())
+        for shard in shard_files:
+            shard_path = os.path.join(draftpath, shard)
+            print(f"[DIAG]   Loading shard: {shard}")
+            shard_dict = torch.load(shard_path, map_location="cpu")
+            state_dict.update(shard_dict)
+    else:
+        raise FileNotFoundError(
+            f"Could not find model files in {draftpath}. "
+            f"Checked: model.safetensors, model.safetensors.index.json, "
+            f"pytorch_model.bin, pytorch_model.bin.index.json"
+        )
+
+    print(f"\n[DIAG] Total keys in pretrained state_dict: {len(state_dict)}")
+    print(f"[DIAG] Pretrained keys (first 20):")
+    for i, k in enumerate(sorted(state_dict.keys())[:20]):
+        print(f"  {k}: {state_dict[k].shape}")
+    if len(state_dict) > 20:
+        print(f"  ... and {len(state_dict) - 20} more")
+
+    # ── Step 2: Get model's expected trainable keys ───────────────────────
+    # Only compare against trainable (non-frozen) parameters
+    model_keys = set()
+    frozen_prefixes = ("target_model.", "embed_tokens.")
+    for k, p in model.named_parameters():
+        if not any(k.startswith(fp) for fp in frozen_prefixes):
+            model_keys.add(k)
+    # Also add buffer keys (like norm.weight which might be a buffer in some versions)
+    for k, _ in model.named_buffers():
+        if not any(k.startswith(fp) for fp in frozen_prefixes):
+            model_keys.add(k)
+    
+    print(f"\n[DIAG] Model trainable parameter keys ({len(model_keys)}):")
+    for k in sorted(model_keys)[:20]:
+        print(f"  {k}: {dict(model.named_parameters()).get(k, dict(model.named_buffers()).get(k, 'N/A'))}")
+
+    # ── Step 3: Check key matching and handle prefix issues ───────────────
+    pretrained_keys = set(state_dict.keys())
+    
+    # Direct matching
+    matched = model_keys & pretrained_keys
+    missing_in_pretrained = model_keys - pretrained_keys
+    unexpected = pretrained_keys - model_keys
+    
+    print(f"\n[DIAG] === Key Matching Results (direct) ===")
+    print(f"  Matched:              {len(matched)}")
+    print(f"  Missing in pretrained: {len(missing_in_pretrained)}")
+    print(f"  Unexpected (extra):   {len(unexpected)}")
+    
+    # If no direct match, try stripping common prefixes
+    if len(matched) == 0 and len(state_dict) > 0:
+        print(f"\n[DIAG] No direct key match! Trying prefix stripping...")
+        
+        # Try stripping 'module.' prefix (common DeepSpeed artifact)
+        for prefix in ["module.", "model.", "eagle_model.", "draft_model."]:
+            stripped = {}
+            for k, v in state_dict.items():
+                if k.startswith(prefix):
+                    stripped[k[len(prefix):]] = v
+                else:
+                    stripped[k] = v
+            
+            new_matched = model_keys & set(stripped.keys())
+            if len(new_matched) > len(matched):
+                print(f"  Stripping '{prefix}' prefix: {len(new_matched)} matches (was {len(matched)})")
+                state_dict = stripped
+                matched = new_matched
+                missing_in_pretrained = model_keys - set(state_dict.keys())
+                unexpected = set(state_dict.keys()) - model_keys
+    
+    print(f"\n[DIAG] === Final Key Matching Results ===")
+    print(f"  Matched:              {len(matched)}")
+    print(f"  Missing in pretrained: {len(missing_in_pretrained)}")
+    if missing_in_pretrained:
+        for k in sorted(missing_in_pretrained):
+            print(f"    MISSING: {k}")
+    if unexpected:
+        print(f"  Unexpected keys (first 10):")
+        for k in sorted(unexpected)[:10]:
+            print(f"    EXTRA: {k}: {state_dict[k].shape}")
+    
+    # ── Step 4: Check shape compatibility ─────────────────────────────────
+    shape_mismatches = []
+    for k in matched:
+        model_shape = dict(model.named_parameters())[k].shape if k in dict(model.named_parameters()) else None
+        if model_shape is None:
+            model_shape = dict(model.named_buffers()).get(k, torch.tensor(0)).shape
+        pretrained_shape = state_dict[k].shape
+        if model_shape != pretrained_shape:
+            shape_mismatches.append((k, model_shape, pretrained_shape))
+    
+    if shape_mismatches:
+        print(f"\n[DIAG] !!! SHAPE MISMATCHES FOUND !!!")
+        for k, ms, ps in shape_mismatches:
+            print(f"  {k}: model={ms}, pretrained={ps}")
+        # Remove shape-mismatched keys from state_dict to avoid errors
+        for k, _, _ in shape_mismatches:
+            del state_dict[k]
+            matched.discard(k)
+    
+    # ── Step 5: Load the weights ──────────────────────────────────────────
+    if len(matched) == 0:
+        print(f"\n[DIAG] *** WARNING: NO weights could be loaded! Model will use random weights! ***")
+        print(f"[DIAG] This will result in near-zero accuracy.")
+        print(f"[DIAG] The pretrained model's architecture likely differs from the current Model class.")
+    else:
+        result = model.load_state_dict(state_dict, strict=False)
+        print(f"\n[DIAG] load_state_dict result:")
+        print(f"  Missing keys:    {len(result.missing_keys)}")
+        print(f"  Unexpected keys: {len(result.unexpected_keys)}")
+        
+        # Count how many trainable params were actually loaded
+        loaded_trainable = matched - set(k for k, ms, ps in shape_mismatches) if shape_mismatches else matched
+        print(f"\n[DIAG] Successfully loaded {len(loaded_trainable)} trainable parameter tensors")
+    
+    return len(matched)
+
+
 # ── Main evaluation ───────────────────────────────────────────────────────────
 def main():
     tokenizer = AutoTokenizer.from_pretrained(args.basepath)
@@ -209,13 +369,41 @@ def main():
     if args.num_hidden_layers is not None:
         config.num_hidden_layers = args.num_hidden_layers
 
-    # Build model with quant_method=none → no quantization applied
+    # Build model WITHOUT loading draftpath weights (draftpath=None in train_config)
     model = Model(config, ds_config, train_config, path=args.basepath, load_emb=True, load_head=True)
 
-    # Build draft vocab mapping (uses cache.pt if available, otherwise builds from trainpath)
+    # Build draft vocab mapping (uses cache.pt if available)
     model.scandata(args.trainpath, args.basepath)
+    
+    # ── Check if pretrained model has its own cache.pt ────────────────────
+    pretrained_cache = os.path.join(args.draftpath, "cache.pt")
+    if os.path.exists(pretrained_cache):
+        print(f"\n[DIAG] Found cache.pt in pretrained model directory: {pretrained_cache}")
+        print(f"[DIAG] Comparing with local cache.pt...")
+        local_cache = torch.load("cache.pt")
+        remote_cache = torch.load(pretrained_cache)
+        local_t2d = local_cache["t2d"]
+        remote_t2d = remote_cache["t2d"]
+        if torch.equal(local_t2d, remote_t2d):
+            print(f"[DIAG] cache.pt files are IDENTICAL - draft vocab matches")
+        else:
+            diff_count = (local_t2d != remote_t2d).sum().item()
+            print(f"[DIAG] !!! cache.pt files DIFFER at {diff_count} positions !!!")
+            print(f"[DIAG] Using pretrained model's cache.pt for correct draft vocab mapping")
+            model.d2t = remote_cache["d2t"].to(model.d2t.device)
+            model.t2d = remote_cache["t2d"].to(model.t2d.device)
 
-    # Initialize DeepSpeed engine (evaluation-only, no optimizer needed)
+    # ── Load pretrained weights with diagnostics ──────────────────────────
+    num_loaded = load_draft_weights_with_diagnostics(model, args.draftpath)
+    
+    if num_loaded == 0:
+        print("\n" + "=" * 60)
+        print("FATAL: No weights were loaded from the pretrained model!")
+        print("This means the pretrained model has different architecture keys.")
+        print("Please check the diagnostic output above.")
+        print("=" * 60)
+
+    # Initialize DeepSpeed engine (evaluation-only)
     args.deepspeed_config = None
     model_engine, _, _, _ = deepspeed.initialize(
         args=args,
@@ -238,13 +426,13 @@ def main():
         collate_fn=DataCollatorWithPadding()
     )
 
-    # ── Evaluation loop ───────────────────────────────────────────────────────
+    # ── Evaluation loop ───────────────────────────────────────────────────
     model.eval()
     epoch_acces = [[] for _ in range(model.length)]
     epoch_plosses = [[] for _ in range(model.length)]
 
     if global_rank == 0:
-        print("=" * 60)
+        print("\n" + "=" * 60)
         print("Evaluating pretrained EAGLE3 draft model (no quantization)")
         print(f"  Draft model path : {args.draftpath}")
         print(f"  Base model path  : {args.basepath}")
@@ -252,6 +440,7 @@ def main():
         print(f"  Hidden layers    : {args.num_hidden_layers}")
         print(f"  Quant method     : {args.quant_method}")
         print(f"  Num test samples : {len(testdataset)}")
+        print(f"  Weights loaded   : {num_loaded} tensors")
         print("=" * 60)
 
     for batch_idx, data in enumerate(tqdm(test_loader, disable=(global_rank != 0), desc="Evaluating")):
@@ -264,7 +453,7 @@ def main():
             epoch_acces = [epoch_acces[i] + [acces[i]] for i in range(len(acces))]
             epoch_plosses = [epoch_plosses[i] + [plosses[i].item()] for i in range(len(plosses))]
 
-    # ── Aggregate and print results ───────────────────────────────────────────
+    # ── Aggregate and print results ───────────────────────────────────────
     results = {"accuracy": {}, "ploss": {}}
 
     if global_rank == 0:
@@ -294,7 +483,7 @@ def main():
     if global_rank == 0:
         print("=" * 60)
 
-    # ── Save results to JSON ──────────────────────────────────────────────────
+    # ── Save results to JSON ──────────────────────────────────────────────
     if global_rank == 0:
         output_path = args.output or "eval_pretrained_results.json"
         results["config"] = {
@@ -303,6 +492,7 @@ def main():
             "testpath": args.testpath,
             "num_hidden_layers": args.num_hidden_layers,
             "quant_method": args.quant_method,
+            "weights_loaded": num_loaded,
         }
         with open(output_path, "w") as f:
             json.dump(results, f, indent=2)
