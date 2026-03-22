@@ -16,6 +16,7 @@ parser.add_argument("--eff_bit", type=float, default=0.1, help="Effective bit fo
 parser.add_argument("--quant_method", type=str, default="littlebit", choices=["littlebit", "onebit", "none"], help="Quantization method for draft model layers")
 parser.add_argument("--num_epochs", type=int, default=40, help="Number of epochs to train")
 parser.add_argument("--kd_hidden_weight", type=float, default=1.0, help="Weight for hidden state KD loss (layer-to-layer supervision)")
+parser.add_argument("--lr", type=float, default=None, help="Peak learning rate (overrides ds_config warmup_max_lr)")
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 import json
@@ -258,6 +259,8 @@ if "scheduler" in ds_config:
         ds_config["scheduler"]["params"] = {}
     ds_config["scheduler"]["params"]["total_num_steps"] = total_num_steps
     ds_config["scheduler"]["params"]["warmup_num_steps"] = int(total_num_steps * 0.05)
+    if args.lr is not None:
+        ds_config["scheduler"]["params"]["warmup_max_lr"] = args.lr
 
 args.deepspeed_config = None
 model_engine, optimizer, _, _ = deepspeed.initialize(args=args,

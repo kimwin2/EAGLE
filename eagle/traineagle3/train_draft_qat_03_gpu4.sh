@@ -17,4 +17,5 @@ python -m deepspeed.launcher.runner --num_gpus 4 main.py \
     --num_epochs 5 \
     --num_hidden_layers 1 \
     --draftpath ../../EAGLE3-LLaMA3.1-Instruct-8B \
-    --eff_bit 0.3
+    --eff_bit 0.3 \
+    --lr 5e-5
