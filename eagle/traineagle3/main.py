@@ -15,6 +15,7 @@ parser.add_argument("--draftpath", type=str, default=None, help="Path to pre-tra
 parser.add_argument("--eff_bit", type=float, default=0.1, help="Effective bit for LittleBit quantization")
 parser.add_argument("--quant_method", type=str, default="littlebit", choices=["littlebit", "onebit", "none"], help="Quantization method for draft model layers")
 parser.add_argument("--num_epochs", type=int, default=40, help="Number of epochs to train")
+parser.add_argument("--kd_hidden_weight", type=float, default=1.0, help="Weight for hidden state KD loss (layer-to-layer supervision)")
 parser = deepspeed.add_config_arguments(parser)
 args = parser.parse_args()
 import json
@@ -47,7 +48,8 @@ train_config = TrainConfig({
     "disable_littlebit": args.disable_littlebit,
     "draftpath": args.draftpath,
     "eff_bit": args.eff_bit,
-    "quant_method": args.quant_method
+    "quant_method": args.quant_method,
+    "kd_hidden_weight": args.kd_hidden_weight
 })
 
 
@@ -314,6 +316,7 @@ for epoch in range(start_epoch, num_epochs):
     model.train()
     epoch_acces = [[] for _ in range(model.length)]
     epoch_plosses = [[] for _ in range(model.length)]
+    epoch_hlosses = [[] for _ in range(model.length)]
 
     if global_rank == 0:
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
@@ -324,14 +327,16 @@ for epoch in range(start_epoch, num_epochs):
 
         model.zero_grad()
 
-        plosses, vlosses, acces = model_engine(input_ids=data["input_ids"].to(rank),
+        plosses, vlosses, acces, hlosses = model_engine(input_ids=data["input_ids"].to(rank),
                                                attention_mask=data["attention_mask"].to(rank),
                                                loss_mask=data["loss_mask"],
                                                )
 
         ploss_weight = [0.8 ** i for i in range(len(plosses))]
         ploss = sum([ploss_weight[i] * plosses[i] for i in range(len(plosses))])
-        loss = ploss
+        hloss_weight = [0.8 ** i for i in range(len(hlosses))]
+        hloss = sum([hloss_weight[i] * hlosses[i] for i in range(len(hlosses))]) if hlosses else 0
+        loss = ploss + train_config["kd_hidden_weight"] * hloss
         model_engine.backward(loss)
 
 
@@ -341,12 +346,15 @@ for epoch in range(start_epoch, num_epochs):
             writer.add_scalar("Train/LR", optimizer.param_groups[0]["lr"], global_step)
             for i in range(len(plosses)):
                 writer.add_scalar(f"Train/pLoss/pos_{i}", plosses[i].item(), global_step)
+            for i in range(len(hlosses)):
+                writer.add_scalar(f"Train/hLoss/pos_{i}", hlosses[i].item(), global_step)
             for i in range(len(acces)):
                 writer.add_scalar(f"Train/Acc/pos_{i}", acces[i], global_step)
         global_step += 1
 
         epoch_acces = [epoch_acces[i] + [acces[i]] for i in range(len(acces))]
         epoch_plosses = [epoch_plosses[i] + [plosses[i].item()] for i in range(len(plosses))]
+        epoch_hlosses = [epoch_hlosses[i] + [hlosses[i].item()] for i in range(len(hlosses))]
 
 
     for i in range(len(epoch_acces)):
@@ -367,17 +375,28 @@ for epoch in range(start_epoch, num_epochs):
             if writer is not None:
                 writer.add_scalar(f"Train_Epoch/pLoss/pos_{i}", loss_i, epoch + 1)
 
+    for i in range(len(epoch_hlosses)):
+        loss_i = torch.tensor(epoch_hlosses[i]).cuda().mean()
+        deepspeed.comm.all_reduce(loss_i, op=deepspeed.comm.ReduceOp.AVG)
+        loss_i = loss_i.item()
+        if global_rank == 0:
+            print(f"Train Epoch [{epoch + 1}/{num_epochs}], position {i}, hLoss: {loss_i:.4f}")
+            if writer is not None:
+                writer.add_scalar(f"Train_Epoch/hLoss/pos_{i}", loss_i, epoch + 1)
+
     epoch_acces = [[] for _ in range(model.length)]
     epoch_plosses = [[] for _ in range(model.length)]
+    epoch_hlosses = [[] for _ in range(model.length)]
 
     for batch_idx, data in enumerate(tqdm(test_loader)):
         with torch.no_grad():
-            plosses, vlosses, acces = model_engine(input_ids=data["input_ids"].to(rank),
+            plosses, vlosses, acces, hlosses = model_engine(input_ids=data["input_ids"].to(rank),
                                                    attention_mask=data["attention_mask"].to(rank),
                                                    loss_mask=data["loss_mask"],
                                                    )
             epoch_acces = [epoch_acces[i] + [acces[i]] for i in range(len(acces))]
             epoch_plosses = [epoch_plosses[i] + [plosses[i].item()] for i in range(len(plosses))]
+            epoch_hlosses = [epoch_hlosses[i] + [hlosses[i].item()] for i in range(len(hlosses))]
 
     for i in range(len(epoch_acces)):
         acc_i = torch.tensor(epoch_acces[i]).cuda().mean()
@@ -396,6 +415,15 @@ for epoch in range(start_epoch, num_epochs):
             print(f"Test Epoch [{epoch + 1}/{num_epochs}], position {i}, pLoss: {loss_i:.2f}")
             if writer is not None:
                 writer.add_scalar(f"Test_Epoch/pLoss/pos_{i}", loss_i, epoch + 1)
+
+    for i in range(len(epoch_hlosses)):
+        loss_i = torch.tensor(epoch_hlosses[i]).cuda().mean()
+        deepspeed.comm.all_reduce(loss_i, op=deepspeed.comm.ReduceOp.AVG)
+        loss_i = loss_i.item()
+        if global_rank == 0:
+            print(f"Test Epoch [{epoch + 1}/{num_epochs}], position {i}, hLoss: {loss_i:.4f}")
+            if writer is not None:
+                writer.add_scalar(f"Test_Epoch/hLoss/pos_{i}", loss_i, epoch + 1)
     # clear out the redundance cahce after each step
     torch.cuda.empty_cache()
 

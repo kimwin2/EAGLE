@@ -507,6 +507,7 @@ class Model(nn.Module):
         self.draft_vocab_size = config.draft_vocab_size
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.length = 7
+        self.kd_hidden_weight = training_config.get("kd_hidden_weight", 1.0)
         self.target_model = LlamaForCausalLM.from_pretrained(path, torch_dtype=torch.float16)
         self.target_model.eval()
         self.fc=nn.Linear(self.hidden_size*3, self.hidden_size, bias=False)
@@ -792,15 +793,19 @@ class Model(nn.Module):
         hidden_states=torch.cat((hidden_states0,hidden_states1,hidden_states2),dim=-1)
         # hidden_states=torch.cat((hidden_states0,hidden_states1),dim=-1)
         target = outs.logits
+        # Extract target's post-norm last hidden state for hidden state KD
+        target_last_hidden = outs.hidden_states[-1]
         target = padding(target, left=False)
+        target_last_hidden = padding(target_last_hidden, left=False)
         input_ids = padding(input_ids, left=False)
 
         if target is not None:
             target = target.to(device)
+            target_last_hidden = target_last_hidden.to(device)
             loss_mask = loss_mask[..., None]
             loss_mask = loss_mask.to(device)
 
-        return hidden_states, target, loss_mask, input_ids
+        return hidden_states, target, loss_mask, input_ids, target_last_hidden
 
     def forward(
             self,
@@ -815,7 +820,7 @@ class Model(nn.Module):
             loss_mask: Optional[torch.Tensor] = None,
 
     ):
-        hidden_states, target, loss_mask, input_ids = self.dataprepare(input_ids, attention_mask, loss_mask)
+        hidden_states, target, loss_mask, input_ids, target_last_hidden = self.dataprepare(input_ids, attention_mask, loss_mask)
 
         batch_size, seq_length, _ = hidden_states.shape
         seq_length_with_past = seq_length
@@ -857,6 +862,7 @@ class Model(nn.Module):
         plosses = []
         vlosses = []
         acces = []
+        hlosses = []
         cache_hidden = [[], []]
 
         for idx in range(self.length):
@@ -926,6 +932,11 @@ class Model(nn.Module):
 
             hidden_states_out = self.norm(hidden_states_out)
 
+            # Hidden state KD loss (layer-to-layer supervision)
+            if self.kd_hidden_weight > 0:
+                hidden_loss = (self.l1smooth(hidden_states_out, target_last_hidden.to(hidden_states_out.dtype)) * loss_mask).mean()
+                hlosses.append(hidden_loss)
+
             logits = self.lm_head(hidden_states_out)
             logits = logits.float()
             out_logp = nn.LogSoftmax(dim=2)(logits)
@@ -939,11 +950,12 @@ class Model(nn.Module):
             if not last:
                 input_ids = padding(input_ids, left=False)
                 target = padding(target, left=False)
+                target_last_hidden = padding(target_last_hidden, left=False)
                 loss_mask = padding(loss_mask, left=False)
 
 
 
-        return plosses, vlosses, acces
+        return plosses, vlosses, acces, hlosses
 
 
 
