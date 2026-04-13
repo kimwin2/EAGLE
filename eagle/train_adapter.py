@@ -440,6 +440,14 @@ def main():
     adapter.load_eagle3_weights(eagle3_state)
     adapter = adapter.to(torch.float16).to(device)
 
+    # ── Keep BiTA embeddings in fp32 for precise gradient updates ──
+    # fp16 precision is too low for small lr updates → loss won't decrease
+    adapter.prompt_embeddings = adapter.prompt_embeddings.float()
+    adapter.prompt_hidden = adapter.prompt_hidden.float()
+    adapter.mask_embeddings = adapter.mask_embeddings.float()
+    adapter.mask_hidden = adapter.mask_hidden.float()
+    print("  [BiTA] Promoted trainable embeddings to fp32")
+
     print(f"  Total params:     {adapter.count_total_params():>12,}")
     print(f"  Trainable params: {adapter.count_trainable_params():>12,}")
 
