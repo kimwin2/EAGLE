@@ -1,4 +1,4 @@
-# BiTA-EAGLE3 학습 가이드 (2x2 Mini-Tree)
+# BiTA-EAGLE3 학습 가이드 (2x2 Mini-Tree / Serial Chain)
 
 ## 목차
 1. [사전 준비](#1-사전-준비)
@@ -62,14 +62,16 @@ python eagle/test_bita.py
 **기대 출력:**
 ```
 ============================================================
-2x2 Mini-Tree BiTA-EAGLE3 Tests
+BiTA-EAGLE3 Tests — 2x2 + Serial Topologies
 ============================================================
 
-[1] Mask shape: torch.Size([1, 1, 28, 28]) ✓
-[2] Real tokens isolated from [P] and [M] ✓
-[3] All [M] tokens see [P] and Real ✓
+── 2x2 Mini-Tree ──
+[2x2-1] Mask shape ✓
 ...
-ALL 12 TESTS PASSED ✓
+── Serial Chain ──
+[serial-1] Mask shape ✓
+...
+ALL 19 TESTS PASSED ✓
 ```
 
 ---
@@ -126,7 +128,7 @@ print(f'Train: {split}, Test: {len(data)-split}')
 
 ## 4. 학습 실행
 
-### 기본 학습 명령어
+### 기본 학습 명령어 (2x2 Mini-Tree)
 
 ```bash
 cd EAGLE
@@ -137,7 +139,8 @@ python eagle/train_adapter.py \
     --eagle3_weights_path /path/to/eagle3/pytorch_model.bin \
     --train_data /path/to/train.json \
     --test_data /path/to/test.json \
-    --save_dir ./bita_ckpt \
+    --save_dir ./bita_ckpt_2x2 \
+    --topology 2x2 \
     --num_epochs 20 \
     --batch_size 1 \
     --lr 1e-3 \
@@ -147,6 +150,23 @@ python eagle/train_adapter.py \
     --ce_weight 1.0 \
     --kl_weight 0.5
 ```
+
+### Serial Chain 학습 명령어
+
+```bash
+python eagle/train_adapter.py \
+    --base_model_path meta-llama/Meta-Llama-3-8B-Instruct \
+    --eagle3_config_path eagle/traineagle3/config.json \
+    --eagle3_weights_path /path/to/eagle3/pytorch_model.bin \
+    --train_data /path/to/train.json \
+    --save_dir ./bita_ckpt_serial \
+    --topology serial \
+    --num_epochs 20
+```
+
+> 💡 **토폴로지 차이:**  
+> - `--topology 2x2`: 2 branches × depth 2 (M_1a→M_2a, M_1b→M_2b). 캐스캐이딩 실패에 강함.  
+> - `--topology serial`: 1 chain × depth 4 (M_1→M_2→M_3→M_4). 더 깊은 추측 가능.
 
 ### 매개변수 설명
 
@@ -165,6 +185,7 @@ python eagle/train_adapter.py \
 | `--max_len` | 2048 | 최대 시퀀스 길이 |
 | `--ce_weight` | 1.0 | Cross-Entropy 손실 가중치 |
 | `--kl_weight` | 0.5 | KL Divergence 손실 가중치 |
+| `--topology` | `2x2` | 마스크 토폴로지: `2x2` (미니트리) 또는 `serial` (직렬 체인) |
 
 ### EAGLE-3 체크포인트 경로 찾기
 
@@ -267,6 +288,7 @@ python eagle/inference.py \
     --eagle3_model_path ./eagle3_ckpt \
     --bita_weights_path ./bita_ckpt/epoch_20/bita_embeddings.pt \
     --prompt "Explain the concept of speculative decoding in LLM inference." \
+    --topology 2x2 \
     --is_llama3 \
     --max_new_tokens 256
 ```
@@ -369,18 +391,33 @@ pip install torch transformers accelerate datasets safetensors huggingface_hub t
 # 2. 테스트
 python eagle/test_bita.py
 
-# 3. 학습
+# 3. 학습 (2x2)
 python eagle/train_adapter.py \
     --base_model_path meta-llama/Meta-Llama-3-8B-Instruct \
     --eagle3_config_path eagle/traineagle3/config.json \
     --eagle3_weights_path /path/to/eagle3/pytorch_model.bin \
     --train_data /path/to/sharegpt.json \
-    --save_dir ./bita_ckpt --num_epochs 20
+    --save_dir ./bita_ckpt --topology 2x2 --num_epochs 20
 
-# 4. 추론
+# 3-alt. 학습 (serial)
+python eagle/train_adapter.py \
+    --base_model_path meta-llama/Meta-Llama-3-8B-Instruct \
+    --eagle3_config_path eagle/traineagle3/config.json \
+    --eagle3_weights_path /path/to/eagle3/pytorch_model.bin \
+    --train_data /path/to/sharegpt.json \
+    --save_dir ./bita_ckpt_serial --topology serial --num_epochs 20
+
+# 4. 추론 (2x2)
 python eagle/inference.py \
     --base_model_path meta-llama/Meta-Llama-3-8B-Instruct \
     --eagle3_model_path /path/to/eagle3 \
     --bita_weights_path ./bita_ckpt/epoch_20/bita_embeddings.pt \
-    --is_llama3 --benchmark
+    --topology 2x2 --is_llama3 --benchmark
+
+# 4-alt. 추론 (serial)
+python eagle/inference.py \
+    --base_model_path meta-llama/Meta-Llama-3-8B-Instruct \
+    --eagle3_model_path /path/to/eagle3 \
+    --bita_weights_path ./bita_ckpt_serial/epoch_20/bita_embeddings.pt \
+    --topology serial --is_llama3 --benchmark
 ```

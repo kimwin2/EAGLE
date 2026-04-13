@@ -29,9 +29,7 @@ from transformers import AutoTokenizer, AutoConfig
 # ─── Local imports ───
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tree_bita_model import (
-    TreeBiTAAdapter, NUM_MASK_TOKENS,
-    M_1A, M_1B, M_2A, M_2B,
-    BRANCH_A, BRANCH_B,
+    TreeBiTAAdapter, NUM_MASK_TOKENS, VALID_TOPOLOGIES,
 )
 from model.configs import EConfig
 from model.kv_cache import initialize_past_key_values
@@ -356,6 +354,7 @@ def load_bita_model(
     base_model_path: str,
     eagle3_model_path: str,
     bita_weights_path: Optional[str] = None,
+    topology: str = "2x2",
     num_prompt_tokens: int = 8,
     total_token: int = 6,
     depth: int = 2,
@@ -398,6 +397,7 @@ def load_bita_model(
 
     adapter = TreeBiTAAdapter(
         eagle3_config=eagle3_config,
+        topology=topology,
         num_prompt_tokens=num_prompt_tokens,
         top_k=top_k,
         total_tokens=total_token,
@@ -457,6 +457,8 @@ def main():
     parser.add_argument('--max_length', type=int, default=2048)
     parser.add_argument('--num_prompt_tokens', type=int, default=8)
     parser.add_argument('--is_llama3', action='store_true')
+    parser.add_argument('--topology', type=str, default='2x2', choices=['2x2', 'serial'],
+                        help='Mask topology: "2x2" (mini-tree) or "serial" (causal chain)')
     parser.add_argument('--benchmark', action='store_true',
                         help='Run latency benchmark')
     args = parser.parse_args()
@@ -467,6 +469,7 @@ def main():
         base_model_path=args.base_model_path,
         eagle3_model_path=args.eagle3_model_path,
         bita_weights_path=args.bita_weights_path,
+        topology=args.topology,
         num_prompt_tokens=args.num_prompt_tokens,
         torch_dtype=torch.float16,
         device_map="auto",

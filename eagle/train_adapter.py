@@ -31,9 +31,7 @@ set_seed(42)
 # ─── Local imports ───
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tree_bita_model import (
-    TreeBiTAAdapter, NUM_MASK_TOKENS,
-    M_1A, M_1B, M_2A, M_2B,
-    MINI_TREE_DEPTH_MAP,
+    TreeBiTAAdapter, NUM_MASK_TOKENS, VALID_TOPOLOGIES,
 )
 from model.configs import EConfig
 
@@ -279,16 +277,11 @@ class BiTATrainer:
 
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """
-        One training step for 2x2 Mini-Tree.
+        One training step (topology-aware).
 
-        Ground truth mapping:
-          - M_1a (slot 0) and M_1b (slot 1): target model's output at t+1
-          - M_2a (slot 2) and M_2b (slot 3): target model's output at t+2
-
-        For each context position t:
-          1. Build [P | Real_0..t | M_1a, M_1b, M_2a, M_2b]
-          2. Single forward pass through adapter
-          3. CE + KL loss at all 4 [M] positions
+        Ground truth mapping per slot is determined by adapter.depth_map:
+          - 2x2:    slots [0,1,2,3] → depths [1,1,2,2] → positions [t+1,t+1,t+2,t+2]
+          - serial:  slots [0,1,2,3] → depths [1,2,3,4] → positions [t+1,t+2,t+3,t+4]
         """
         self.adapter.train()
         input_ids = batch["input_ids"].to(self.device)
@@ -296,6 +289,7 @@ class BiTATrainer:
         loss_mask = batch["loss_mask"].to(self.device)
 
         batch_size, seq_len = input_ids.shape
+        max_depth = max(self.adapter.depth_map.values())  # 2 for 2x2, 4 for serial
 
         # ── Step 1: Get target data ──
         hidden_states_all, target_logits = self.prepare_target_data(input_ids, attention_mask)
@@ -310,19 +304,15 @@ class BiTATrainer:
 
         for b in range(batch_size):
             sample_len = attention_mask[b].sum().long().item()
-            # Need at least 2 future tokens (t+1 and t+2)
-            if sample_len < 4:
+            if sample_len < max_depth + 2:
                 continue
 
-            # Valid context positions: where loss_mask is active
-            # and we have at least 2 tokens ahead
             valid_positions = torch.where(
-                loss_mask[b, :sample_len - 2] > 0
+                loss_mask[b, :sample_len - max_depth] > 0
             )[0]
             if len(valid_positions) == 0:
                 continue
 
-            # Sub-sample for efficiency (max 32 per sample)
             max_ctx = min(32, len(valid_positions))
             stride = max(1, len(valid_positions) // max_ctx)
             selected_positions = valid_positions[::stride][:max_ctx]
@@ -332,39 +322,31 @@ class BiTATrainer:
                 if ctx_end_idx < 1:
                     continue
 
-                # Check we have t+1 and t+2 in bounds
-                t_plus_1 = ctx_end_idx + 1
-                t_plus_2 = ctx_end_idx + 2
-                if t_plus_2 >= sample_len:
+                # Check all future positions within bounds
+                if ctx_end_idx + max_depth >= sample_len:
                     continue
 
-                # Context tokens
                 ctx_input_ids = input_ids[b:b+1, :ctx_end_idx + 1]
                 ctx_hidden = hidden_states_proj[b:b+1, :ctx_end_idx + 1]
                 last_hidden = ctx_hidden[:, -1:, :]
 
-                # ── Single forward pass ──
                 mask_logits, _ = self.adapter.forward_single_pass(
                     hidden_states_context=ctx_hidden,
                     input_ids_context=ctx_input_ids,
                     last_hidden_for_mask=last_hidden,
                 )
-                # mask_logits: (1, 4, draft_vocab)
-                # Order: [M_1a, M_1b, M_2a, M_2b]
 
-                # ── Build ground truth for each slot ──
-                # M_1a, M_1b → t+1 target logits
-                # M_2a, M_2b → t+2 target logits
+                # ── Build ground truth using depth_map ──
+                # Each slot i predicts ctx_end + depth_map[i]
                 target_positions = torch.tensor(
-                    [t_plus_1, t_plus_1, t_plus_2, t_plus_2],
+                    [ctx_end_idx + self.adapter.depth_map[i] for i in range(NUM_MASK_TOKENS)],
                     device=self.device,
                 )
-                position_valid = torch.ones(1, 4, device=self.device)
+                position_valid = torch.ones(1, NUM_MASK_TOKENS, device=self.device)
 
-                target_logits_m = target_logits[b, target_positions].unsqueeze(0)  # (1, 4, vocab)
-                target_tokens_m = target_logits[b, target_positions].argmax(-1).unsqueeze(0)  # (1, 4)
+                target_logits_m = target_logits[b, target_positions].unsqueeze(0)
+                target_tokens_m = target_logits[b, target_positions].argmax(-1).unsqueeze(0)
 
-                # ── Compute loss ──
                 metrics = self.compute_loss_at_positions(
                     mask_logits, target_logits_m, target_tokens_m, position_valid
                 )
@@ -379,7 +361,6 @@ class BiTATrainer:
         if num_valid == 0:
             return {"loss": 0.0, "ce_loss": 0.0, "kl_loss": 0.0, "accuracy": 0.0}
 
-        # ── Optimizer step ──
         self.optimizer.step()
         if self.scheduler is not None:
             self.scheduler.step()
@@ -420,6 +401,8 @@ def main():
     parser.add_argument('--max_len', type=int, default=2048)
     parser.add_argument('--warmup_steps', type=int, default=200)
     parser.add_argument('--gradient_accumulation', type=int, default=4)
+    parser.add_argument('--topology', type=str, default='2x2', choices=['2x2', 'serial'],
+                        help='Mask topology: "2x2" (mini-tree) or "serial" (causal chain)')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
@@ -439,10 +422,11 @@ def main():
         p.requires_grad = False
 
     # ── Load EAGLE-3 adapter ──
-    print("[2/5] Loading TreeBiTA adapter...")
+    print(f"[2/5] Loading TreeBiTA adapter (topology={args.topology})...")
     config = EConfig.from_pretrained(args.eagle3_config_path)
     adapter = TreeBiTAAdapter(
         eagle3_config=config,
+        topology=args.topology,
         num_prompt_tokens=args.num_prompt_tokens,
     )
 
